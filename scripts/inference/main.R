@@ -61,9 +61,6 @@ for (i in c(1,2,3,4,5)){
   config[["formulas"]] = formulasList[[config[["model_index"]]]]
   config[["groups"]] = groups
   
-  config$N = 200
-  config$linkedin_correct = 2
-  
   result = do.call(inference_mod, config)
   result[["config"]] = config
   
@@ -108,9 +105,6 @@ for (i in c(1,2,3)){
   config = as.list(configs[i,])[c("model_index","N","burnin","size_simu","iter_metropolis","linkedin_correct","data_augmentation","ena_pop","remove_early")]
   config[["formulas"]] = formulasList[[config[["model_index"]]]]
   config[["groups"]] = groupsList[[config[["model_index"]]]]
-
-  config$N = 200
-  config$linkedin_correct = 2
   
   result = do.call(inference_mod, config)
   result[["config"]] = config
