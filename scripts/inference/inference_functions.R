@@ -25,6 +25,7 @@
     
     # forward filter simulation and correction
     y = dt$trace
+    y[1] = "Obs0"
     f = varying_forward(hmm,y)
     
     forwardSeq = f
@@ -98,7 +99,7 @@
     return(pll) 
   }
   
-hmflatlogit=function(iter_metropolis,y,X,scale,w){
+hmflatlogit=function(iter_metropolis,y,X,scale,w,prior){
   p=dim(X)[2] 
   mod = summary(glm(y~-1+X,family=quasibinomial(link = "logit"), weights = w))
   beta=matrix(0,iter_metropolis,p) 
@@ -106,29 +107,42 @@ hmflatlogit=function(iter_metropolis,y,X,scale,w){
   Sigma2=as.matrix(mod$cov.unscaled)
   for (i in 2:iter_metropolis){ 
     tildebeta=rmvn(1,beta[i-1,],scale*Sigma2)
-    llr=logitll(tildebeta,y,X,w)-logitll(beta[i-1,],y,X,w) 
     
-    if (runif(1)<=exp(llr)) {beta[i,]=tildebeta
+    priorM = rep(0,length(beta[i-1,]))
+    priorSD = c(10,rep(4, length(beta[i-1])-1))
+    
+    if (prior==F){
+      logpriorR = 0
+    } else if (prior=="norm1"){
+      priorM = rep(0,length(tildebeta))
+      priorSD = c(5, rep(5, length(tildebeta)-1))
+      logpriorR = sum(dnorm(tildebeta, mean=priorM, sd=priorSD, log = TRUE)) -
+        sum(dnorm(beta[i-1,], mean=priorM, sd=priorSD, log = TRUE))
+    }
+
+    loglikR=logitll(tildebeta,y,X,w)-logitll(beta[i-1,],y,X,w)
+    
+    Mratio = logpriorR+loglikR
+    
+    if (log(runif(1))<=Mratio) {beta[i,]=tildebeta
     } else { beta[i,]=beta[i-1,] }
   } 
   return(beta)
 }
 
-hmflatlogit_wrapper = function(ww, iter_metropolis){
+hmflatlogit_wrapper = function(ww, iter_metropolis, prior=F){
   return(hmflatlogit(iter_metropolis,
                      y = ww$outcome,
                      X = model.matrix(ww$formulas, ww$dataPopMatRest),
                      scale = 1,
-                     w = ww$dataPopMatRest$weight)[iter_metropolis,])
+                     w = ww$dataPopMatRest$weight,
+                     prior=prior)[iter_metropolis,])
 }
-
-
-
-
 
 #### 2. Clean and update functions ####
 
-clean1 = function(x, groups, linkedin_correct,ena_pop,data_augmentation,remove_early,NPER=65){
+setting_up_data = function(x, groups,prop_of_observed,contr_simulated,
+                  ena_pop,remove_early,NPER=65,model_index=NA){
   
   # Restricting the the field 
   y = rle(x$group)
@@ -143,6 +157,7 @@ clean1 = function(x, groups, linkedin_correct,ena_pop,data_augmentation,remove_e
   if (ena_pop) {
     x = x[!is.na(age_ena),]
     if (sum(x[age_ena >= 0.03125 & age_ena <= 0.09375,trace_obs])==0) return(x[NA,])
+    if (model_index == "CV_empty"){x$trace_obs=0}
     x = x[age_ena >= 0.0625,]
     x = x[((period-age_ena)*(NPER-1))<=58,]
     x$age_ena = x$age_ena - 0.0625
@@ -155,9 +170,25 @@ clean1 = function(x, groups, linkedin_correct,ena_pop,data_augmentation,remove_e
   x$age_min = x$period - min(x$period)
   trace_obs_l = as.double(x$trace_obs)
   trace_obs_l[1] = 0
-  phi = 0.8; phiP = phi^-seq(1, length(trace_obs_l))
+  phi = 0.8
+  if (model_index == "check_phi_09"){
+    phi = 0.9
+  }
+  if (model_index == "check_phi_07"){
+    phi = 0.7
+  }
+  if (model_index == "check_phi_06"){
+    phi = 0.6
+  }
+  
+  phiP = phi^-seq(1, length(trace_obs_l))
   x$lagged1 = lag(cumsum(trace_obs_l)/(1:length(trace_obs_l)))
   x$lagged2 = lag(cumsum(trace_obs_l*phiP)/cumsum(phiP))
+  if (model_index == "check_phi_all"){
+  x$lagged2b = lag(cumsum(trace_obs_l*0.6)/cumsum(0.6))
+  x$lagged2c = lag(cumsum(trace_obs_l*0.7)/cumsum(0.7))
+  x$lagged2d = lag(cumsum(trace_obs_l*0.9)/cumsum(0.9))
+  }
   
   lagged3 = c() 
   for (l in transpose(rle(c(x$trace_obs)))){
@@ -175,14 +206,17 @@ clean1 = function(x, groups, linkedin_correct,ena_pop,data_augmentation,remove_e
   x$lambda[x$age_min==0]=1
   
   # correcting depending on setting
-  if (linkedin_correct >= 1){
+  test_included = runif(1)<=prop_of_observed
+  if (test_included){
     x$trace = case_when(x$traj_obs == "1"~"Obs1",
                         x$traj_obs == "0"~"Obs0",
                         T ~ x$trace)
   }
-  if (linkedin_correct==2){
-    x[traj_obs == 98,"weight"] = x[traj_obs == 98,"weight"]*data_augmentation
-  }
+  
+  x$profile_observed = any(x[!is.na(traj_obs)]$traj_obs=="1" | x[!is.na(traj_obs)]$traj_obs == "0" & x[!is.na(traj_obs)]$age_max > 0)
+  x$profile_included = test_included & x$profile_observed
+  
+  x[traj_obs == 98,"weight"] = x[traj_obs == 98,"weight"]*contr_simulated
   
   if (remove_early) {
     x = x[((x$period - x$age_max)*64)>5,]
@@ -301,14 +335,18 @@ varying_posterior = function (f, b, observation, nstates)
   
   #### 4. Wrapper inference functions ####
   
-inference_mod = function(formulas, groups, model_index = NA,
-                         N = 1000, size_simu = 1, iter_metropolis = 30, burnin = 900, 
-                         linkedin_correct = 1, data_augmentation = 0.1, ena_pop = F, remove_early = F){
+inference_mod = function(formulas, groups, dataTot, model_index = NA,
+                         N = 1000, size_simu = 1, iter_metropolis = 30, obsburn = 900, 
+                         prop_of_observed = 1, contr_simulated = 1,
+                         ena_pop = F, remove_early = F){
 
   # Data selection and preparation
-  dataTot2 = parLapply(cl, dataTot, clean1, NPER=65,
+  dataTot2 = parLapply(cl, dataTot, setting_up_data, NPER=65,
                        groups = groups, ena_pop = ena_pop, remove_early = remove_early,
-                       linkedin_correct = linkedin_correct, data_augmentation = data_augmentation)
+                       prop_of_observed = prop_of_observed, contr_simulated = contr_simulated, 
+                       model_index = model_index)
+  
+  
   dataPop = list()
   for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
   
@@ -320,8 +358,8 @@ inference_mod = function(formulas, groups, model_index = NA,
   # first pass to initialize
   dataPop = parLapply(cl, dataPop, simulation_mod, posterior_estim = T, it = 0)
   dataPopMat = rbindlist(dataPop)
-  given_data = dataPopMat[,c("ident","group","traj_obs","lagged1","lagged2","lagged3","period","age_min","age_ena",
-                            "age_max","profile_present","trace","trace_obs","traj","traj_lead")]
+
+  given_data = dataPopMat
   
   vec_field = list("gamma0"=dataPopMat$traj==0 & !is.na(dataPopMat$traj_lead),
                    "gamma1"=dataPopMat$traj==1 & !is.na(dataPopMat$traj_lead),
@@ -341,6 +379,15 @@ inference_mod = function(formulas, groups, model_index = NA,
   
   print(0)
   t = 1
+  
+  prior = F
+  if (model_index == "prior1"){
+    prior = "norm1"
+  } else if (model_index == "prior2"){
+    prior = "norm2"
+  }
+  print(prior)
+  
   for (t in 1:N){
     if (t%%10 ==0) print(t)
     
@@ -355,9 +402,9 @@ inference_mod = function(formulas, groups, model_index = NA,
     # Simulating data
     subsel = sample(names(dataPop), round(size_simu*length(dataPop)), replace=F)
     dataPop[subsel] = parLapply(cl, dataPop[subsel], simulation_mod, 
-                                posterior_estim = t>burnin, it = t)
+                                posterior_estim = t>obsburn, it = t)
      
-    if (t>burnin) save_obs[[t]] = rbindlist(dataPop[subsel])[,c("ident","it","age_max","traj","avgA0","prob_loc")]
+    if (t>obsburn) save_obs[[t]] = rbindlist(dataPop[subsel])[,c("ident","it","age_max","traj","avgA0","prob_loc")]
     
     ## Metropolis-Hastings step
     
@@ -372,12 +419,14 @@ inference_mod = function(formulas, groups, model_index = NA,
     metropolis_data$outcome = list("gamma0"=dataPopMat[vec_field[["gamma0"]],traj_lead],
                    "gamma1"=1-dataPopMat[vec_field[["gamma1"]],traj_lead],
                    "lambda"=dataPopMat[vec_field[["lambda"]],trace_obs])
+    
     metropolis_data$dataPopMatRest = list()
     for (par in c("gamma0","gamma1","lambda")) metropolis_data$dataPopMatRest[[par]] = dataPopMat[vec_field[[par]]]
     
     # Posterior sampling 
+    
     metropolis_result = parLapply(cl, purrr::transpose(metropolis_data), hmflatlogit_wrapper,
-                                  iter_metropolis = iter_metropolis)
+                                  iter_metropolis = iter_metropolis, prior=prior)
   
     # Updating parameters within models
     for (par in c("gamma0","gamma1","lambda")){

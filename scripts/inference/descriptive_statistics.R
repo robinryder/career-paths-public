@@ -21,9 +21,13 @@ dataTot = readRDS("data/clean/dataTot.rds")
 #### Table 1 : cardinality pop 1 ####
 
 NPER = 65
-dataTot2 = parLapply(cl, dataTot, clean1, 
+
+dataTot = readRDS("data/clean/dataTot.rds")
+dataTot2 = parLapply(cl, dataTot, setting_up_data, NPER=65,
                      groups = c("ena"), ena_pop = T, remove_early = F,
-                     linkedin_correct = 1, data_augmentation = 0.01)
+                     prop_of_observed = 1, contr_simulated = 1, model_index="NA")
+
+
 dataPop = list()
 for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
 
@@ -35,17 +39,16 @@ names(tab1) = as.character(1990:2019)
 tab1 = as.data.frame(tab1)
 colnames(tab1) = c("Year","Count")
 kbl(cbind(tab1[1:10,],tab1[11:20,],tab1[21:30,]), format = "latex", booktabs = T,
-    linesep = "",caption="Number of students by year of admission.") |>
+    linesep = "",caption="Number of students by year of admission.", label = "kab:1") |>
   save_kable(file = "documents/figures/population_ena_students_year.tex", booktabs = TRUE)
 
 #### Table 2 : cardinality pop 2 ####
 
-# OK, donc population finale: on filtre pour <= 54
-
-dataTot2 = parLapply(cl, dataTot, clean1, 
+dataTot2 = parLapply(cl, dataTot, setting_up_data, 
                      groups = c("cprefet","ccomptes","iga","ce","cdiplo","igf","dgtresor",
-                                "dgfip","igas","insee"), ena_pop = F, remove_early = F,
-                     linkedin_correct = 1, data_augmentation = 0.01)
+                                "dgfip","igas","insee"), 
+                     prop_of_observed = 1,contr_simulated = 1,
+                     ena_pop = F, remove_early = F, model_index = "NA")
 dataPop = list()
 for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
 
@@ -54,24 +57,27 @@ tab2 = tab2[order(-N)]
 colnames(tab2) = c("group","count")
 
 kbl(cbind(tab2[1:5],tab2[6:10]), format = "latex",booktabs = T,
-    caption = "Number of individuals affiliated by service (1990-2022).")|>
+    caption = "Number of individuals affiliated by service (1990-2022).", label = "kab:2")|>
   save_kable(file = "documents/figures/population_important_groups.tex")
 
 
 #### Table 3 : proportion of profiles ####
 
-dataTot2 = parLapply(cl, dataTot, clean1, 
+dataTot2 = parLapply(cl, dataTot, setting_up_data, NPER=65,
                      groups = c("ena"), ena_pop = T, remove_early = F,
-                     linkedin_correct = 1, data_augmentation = 0.01)
+                     prop_of_observed = 1, contr_simulated = 1, model_index="NA")
+
 dataPop = list()
 for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
 
 rr1 =  unique(rbindlist(dataPop)[,c("ident","group","profile_present")])
 
-dataTot2 = parLapply(cl, dataTot, clean1, 
+dataTot2 = parLapply(cl, dataTot, setting_up_data, 
                      groups = c("cprefet","ccomptes","iga","ce","cdiplo","igf","dgtresor",
-                                "dgfip","igas","insee"), ena_pop = F, remove_early = F,
-                     linkedin_correct = 1, data_augmentation = 0.01)
+                                "dgfip","igas","insee"), 
+                     prop_of_observed = 1,contr_simulated = 1,
+                     ena_pop = F, remove_early = F, model_index = "NA")
+
 dataPop = list()
 for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
 
@@ -84,17 +90,19 @@ tab3 = rr %>% group_by(group) %>% summarise(prop = mean(profile_present)) %>% ar
 tab3a = tab3[1:6,]
 tab3b = tab3[7:11,] %>% add_row("group"="",prop="")
 kbl(cbind(tab3a,tab3b), format = "latex",booktabs = T,linesep = "",
-    caption = "Proportion of individuals by group with a matched profile.")|>
+    caption = "Proportion of individuals by group with a matched profile.",
+    label = "kbl:3")|>
   save_kable(file = "documents/figures/proportion_profiles.tex")
 
 
 #### Table 6: Men/ENA for study 2 #### 
 
 
-dataTot2 = parLapply(cl, dataTot, clean1, 
+dataTot2 = parLapply(cl, dataTot, setting_up_data, 
                      groups = c("cprefet","ccomptes","iga","ce","cdiplo","igf","dgtresor",
-                                "dgfip","igas","insee"), ena_pop = F, remove_early = F,
-                     linkedin_correct = 1, data_augmentation = 0.01)
+                                "dgfip","igas","insee"), 
+                     prop_of_observed = 1,contr_simulated = 1,
+                     ena_pop = F, remove_early = F, model_index = "NA")
 dataPop = list()
 for (x in names(dataTot)) if (nrow(dataTot2[[x]])>1) dataPop[[x]] = dataTot2[[x]]
 
@@ -109,6 +117,52 @@ tab6 = dd2 |>
   arrange(desc(prop_men))
 
 kbl(cbind(tab6[1:5,],tab6[6:10,]), format = "latex",booktabs = T,linesep = "",
-    caption = "Proportion of men and ENA graduates by organization.")|>
+    caption = "Proportion of men and ENA graduates by organization.", label="kab:4")|>
   save_kable(file = "documents/figures/descriptives_men_ena.tex")
+
+
+#### Table : codex ####
+
+
+df = readxl::read_xlsx("data/liste_corps/codex.xlsx")
+df = df %>% select(abrégé, affectation, nomination, intégration, titularisation) %>% arrange(abrégé)
+df[is.na(df)]=0
+setnames(df, "abrégé","short_name")
+kbl(df, format = "latex", booktabs=T, linesep = "",
+    caption = "Type of traces used to define membership by organization",
+    label="kbl:codex") |>
+  save_kable(file = "documents/figures/condex_sum.tex")
+
+
+
+#### Linkedin age effect ####
+
+df = rbindlist(readRDS("data/clean/dataTot.rds"))
+
+NPER = 65
+# Filter, group, and summarize
+result <- df[traj_obs != 98, 
+             .(min_period = min(period, na.rm = TRUE)), 
+             by = .(ident, profile_present)]
+
+result$min_period = ((result$min_period))*(NPER-1)/2 + 1990
+hist(result$min_period)
+
+
+result2 <- df[, 
+             .(min_period = min(period, na.rm = TRUE)), 
+             by = .(ident, profile_present)]
+
+result2$min_period = ((result2$min_period))*(NPER-1)/2 + 1990
+
+
+ggplot() + 
+  geom_histogram(aes(x = result$min_period),  col = "black", fill = "white") + theme_bw() +
+  xlab("Year of initial profile information") + ylab("Count")
+ggsave("documents/figures/desc_initialyear_profiles.pdf", height = 7, width = 7, units = "cm")
+
+ggplot() + 
+  geom_histogram(aes(x = result2$min_period),  col = "black", fill = "white") + theme_bw() +
+  xlab("Year of initial trace") + ylab("Count")
+ggsave("documents/figures/desc_initialyear_noprofiles.pdf", height = 7, width = 7, units = "cm")
 
